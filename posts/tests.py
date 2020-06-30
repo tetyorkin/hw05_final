@@ -3,8 +3,9 @@ from io import BytesIO
 
 from PIL import Image
 from django.core.cache import cache
+from django.core.files.temp import NamedTemporaryFile
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from posts.models import User, Post, Follow
@@ -24,6 +25,7 @@ class TestPosts(TestCase):
         self.client_unauth = Client()
 
     def check_post_on_pages(self, username, post_id, post_text):
+        cache.clear()
         urls = [
             reverse('index'),
             reverse(
@@ -50,48 +52,47 @@ class TestPosts(TestCase):
         response = self.client_unauth.get(reverse('new_post'))
         self.assertRedirects(response, '/auth/login/?next=/new/')
 
-    # def test_create_post_auth_user(self):
-    #     self.client_auth.post(
-    #         reverse('new_post'), data={'text': 'Новый пост'}, )
-    #     post = Post.objects.last()
-    #     self.check_post_on_pages(self.new_user.username, post.id, 'Новый пост')
-    #
-    #     def test_edit_myself_post(self):
-    #         post = Post.objects.create(text='test post',
-    #                                    author_id=self.new_user.id)
-    #         self.client_login.post(
-    #             reverse('post_edit',
-    #                     kwargs={'username': self.new_user.username,
-    #                             'post_id': post.id}),
-    #             data={'text': 'Отредактированный текст'},
-    #         )
-    #         self.check_post_on_pages(self.new_user.username, post.id,
-    #                                  'Отредактированный текст')
+    def test_create_post_auth_user(self):
+        self.client_auth.post(
+            reverse('new_post'), data={'text': 'Новый пост'}, )
+        post = Post.objects.last()
+        self.check_post_on_pages(self.new_user.username, post.id, post.text)
+
+        def test_edit_myself_post(self):
+            post = Post.objects.create(text='test post',
+                                       author_id=self.new_user.id)
+            self.client_login.post(
+                reverse('post_edit',
+                        kwargs={'username': self.new_user.username,
+                                'post_id': post.id}),
+                data={'text': 'Отредактированный текст'},
+            )
+            self.check_post_on_pages(self.new_user.username, post.id,
+                                     'Отредактированный текст')
 
     def test_404_error(self):
         response = self.client_unauth.get('/404/', follow=True)
         self.assertEqual(response.status_code, 404)
 
+    @override_settings(MEDIA_ROOT=tempfile.gettempdir())
     def test_image(self):
+        cache.clear()
+        temp = NamedTemporaryFile()
         img_data = BytesIO()
         image = Image.new("RGB", size=(1, 1), color=(255, 0, 0, 0))
         image.save(img_data, format='JPEG')
-        image_name = 'test'
         image = (
             SimpleUploadedFile(
-                image_name + '.jpg',
+                temp.name + '.jpg',
                 img_data.getvalue(),
                 'image/png'
             )
         )
-
-        self.client_auth.post(
-            reverse('new_post'),
-            {'text': 'image test',
-             'image': image},
-            follow=True
+        post = Post.objects.create(
+            author=self.new_user,
+            text='image test',
+            image=image,
         )
-        post = Post.objects.last()
         response = self.client_auth.get(reverse('index'))
         self.assertContains(response, '<img')
 
@@ -113,7 +114,8 @@ class TestPosts(TestCase):
         self.assertContains(response, '<img')
 
     def test_wrong_image(self):
-        with open('posts/apps.py', mode='rb') as fp:
+        temp = NamedTemporaryFile(suffix='txt')
+        with open(temp.name, mode='rb') as fp:
             self.response = (
                 self.client_auth.post(
                     reverse('new_post'),
@@ -127,28 +129,68 @@ class TestPosts(TestCase):
         response = cache.get(reverse('index'), None)
         self.assertEqual(response, None)
 
-    def post_follow_check(self, post, follow=False):
-        cache.clear()
-        response = self.client.get(f'/follow/')
-        if follow:
-            self.assertContains(response, post.text)
-        else:
-            self.assertNotContains(response, post.text)
+
+class Follower(TestCase):
+    def setUp(self):
+        self.client_auth = Client()
+        self.test_user_1 = (
+            User.objects.create_user(
+                username='test_user_1',
+                email='test_user_1@test.ru',
+                password='12345'
+            )
+        )
+        self.test_user_2 = (
+            User.objects.create_user(
+                username='test_user_2',
+                email='test_user_2@test.ru',
+                password='12345'
+            )
+        )
+        self.test_user_3 = (
+            User.objects.create_user(
+                username='test_user_3',
+                email='test_user_3@test.ru',
+                password='12345'
+            )
+        )
+        self.post = (
+            Post.objects.create(
+                text='Some test text', author=self.test_user_2
+            )
+        )
+        self.client_auth.force_login(self.test_user_1)
 
     def test_follow(self):
-        self.client_auth.post(
-            reverse('new_post'),
-            {'text': 'test_follow'},
-            follow=True
+        self.client.force_login(self.test_user_1)
+        self.client.get(reverse(
+            'profile_follow', kwargs={'username': self.test_user_2.username})
         )
-        post = Post.objects.last()
+        self.assertEqual(Follow.objects.count(), 1)
+
+    def test_unfollow(self):
+        self.client.force_login(self.test_user_1)
+        self.client.get(reverse(
+            'profile_follow', kwargs={'username': self.test_user_2.username})
+        )
+        self.client.get(
+            reverse(
+                'profile_unfollow',
+                kwargs={'username': self.test_user_2.username}
+            )
+        )
+        self.assertEqual(Follow.objects.count(), 0)
+
+    def test_follow_post(self):
+        self.client.force_login(self.test_user_1)
+        self.client.get(reverse(
+            'profile_follow', kwargs={'username': self.test_user_2.username})
+        )
         response = self.client.get('/follow/')
-        self.assertRedirects(response, '/auth/login/?next=/follow/')
-        self.post_follow_check(post, False)
-        self.client_auth.get(f'/{post.author.username}/follow/')
-        self.post_follow_check(post, True)
-        self.client_auth.get(f'/{post.author.username}/unfollow/')
-        self.post_follow_check(post, False)
+        self.assertContains(response, self.post.text, status_code=200)
+        self.client.force_login(self.test_user_3)
+        response = self.client.get('/follow/')
+        self.assertNotContains(response, self.post.text, status_code=200)
 
     def test_comment(self):
         self.client_auth.post(
@@ -156,18 +198,39 @@ class TestPosts(TestCase):
             {'text': 'test_comment'},
             follow=True
         )
-        post = Post.objects.last()
-        comment_text = 'comment'
         response = self.client.post(
-            f'/{post.author.username}/{post.id}/comment/',
-            {'text': comment_text})
+            reverse(
+                'add_comment',
+                kwargs={
+                    'username': self.post.author.username,
+                    'post_id': self.post.id}
+            ),
+            {'text': 'comment_text'}
+        )
+
         self.assertRedirects(
             response,
-            f'/auth/login/?next=/{post.author.username}/{post.id}/comment/',
+            (
+                f'/auth/login/?next=/'
+                f'{self.post.author.username}/{self.post.id}/comment/'
+            ),
         )
         self.client_auth.post(
-            f'/{post.author.username}/{post.id}/comment/',
-            {'text': comment_text}
+            reverse(
+                'add_comment',
+                kwargs={
+                    'username': self.post.author.username,
+                    'post_id': self.post.id}
+            ),
+            {'text': 'comment_text'}
         )
-        response = self.client.get(f'/{post.author.username}/{post.id}/')
-        self.assertContains(response, comment_text,)
+        response = (
+            self.client.get(
+                reverse(
+                    'post',
+                    kwargs={'username': self.post.author.username,
+                            'post_id': self.post.id}
+                )
+            )
+        )
+        self.assertContains(response, 'comment_text',)
