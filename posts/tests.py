@@ -58,17 +58,17 @@ class TestPosts(TestCase):
         post = Post.objects.last()
         self.check_post_on_pages(self.new_user.username, post.id, post.text)
 
-        def test_edit_myself_post(self):
-            post = Post.objects.create(text='test post',
-                                       author_id=self.new_user.id)
-            self.client_login.post(
-                reverse('post_edit',
-                        kwargs={'username': self.new_user.username,
-                                'post_id': post.id}),
-                data={'text': 'Отредактированный текст'},
-            )
-            self.check_post_on_pages(self.new_user.username, post.id,
-                                     'Отредактированный текст')
+    def test_edit_myself_post(self):
+        post = Post.objects.create(text='test post',
+                                   author_id=self.new_user.id)
+        self.client_auth.post(
+            reverse('post_edit',
+                    kwargs={'username': self.new_user.username,
+                            'post_id': post.id}),
+            data={'text': 'Отредактированный текст'},
+        )
+        self.check_post_on_pages(self.new_user.username, post.id,
+                                 'Отредактированный текст')
 
     def test_404_error(self):
         response = self.client_unauth.get('/404/', follow=True)
@@ -186,10 +186,10 @@ class Follower(TestCase):
         self.client.get(reverse(
             'profile_follow', kwargs={'username': self.test_user_2.username})
         )
-        response = self.client.get('/follow/')
+        response = self.client.get(reverse('follow_index'))
         self.assertContains(response, self.post.text, status_code=200)
         self.client.force_login(self.test_user_3)
-        response = self.client.get('/follow/')
+        response = self.client.get(reverse('follow_index'))
         self.assertNotContains(response, self.post.text, status_code=200)
 
     def test_comment(self):

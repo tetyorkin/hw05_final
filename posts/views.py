@@ -9,7 +9,7 @@ from .forms import PostForm, CommentForm
 
 @cache_page(1 * 20)
 def index(request):
-    post_list = Post.objects.order_by('-pub_date').all()
+    post_list = Post.objects.select_related('group').all()
     paginator = Paginator(post_list, 10)
     page_number = request.GET.get('page')
     page = paginator.get_page(page_number)
@@ -142,8 +142,7 @@ def add_comment(request, username, post_id):
 @login_required()
 def follow_index(request):
     following = Follow.objects.filter(user=request.user).all()
-    author_list = [author.author.id for author in following]
-    post_list = Post.objects.filter(author__in=author_list).all()
+    post_list = Post.objects.filter(author__following__in=following)
     paginator = Paginator(post_list, 5)
     page_number = request.GET.get('page')
     page = paginator.get_page(page_number)
@@ -156,19 +155,14 @@ def follow_index(request):
 
 @login_required
 def profile_follow(request, username):
-    user = request.user.id
     author = get_object_or_404(User, username=username)
-    follow_check = Follow.objects.filter(user=user, author=author.id).count()
-    if follow_check == 0 and request.user.username != username:
-        follow = Follow.objects.create(user=request.user, author=author)
-        follow.save()
+    if request.user != author:
+        Follow.objects.get_or_create(user=request.user, author=author)
     return redirect('profile', username=username)
 
 
 @login_required
 def profile_unfollow(request, username):
-    user = request.user.id
     author = get_object_or_404(User, username=username)
-    follow = get_object_or_404(Follow, user=user, author=author)
-    follow.delete()
-    return redirect('profile', username=username)
+    Follow.objects.filter(user=request.user, author=author).delete()
+    return redirect('profile', username)
